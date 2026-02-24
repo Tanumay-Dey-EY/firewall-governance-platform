@@ -230,11 +230,7 @@ st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
 # -----------------------------------
 raw_text = uploaded.read().decode("utf-8", errors="ignore")
 with st.spinner("Analyzing configuration…"):
-   result = analyze_config(
-       raw_text,
-       benchmark_family=pack,
-       benchmark_version=pack_ver
-   )
+   result = analyze_config(raw_text)
 meta = result.meta or {}
 hostname = meta.get("hostname", "Unknown")
 platform = meta.get("platform", "Unknown")
@@ -406,3 +402,4 @@ with tab_export:
        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
        use_container_width=True
    )
+
