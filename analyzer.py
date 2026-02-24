@@ -1,7 +1,7 @@
 import re
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 # -------------------------
 # Parsing Helpers
 # -------------------------
@@ -20,11 +20,11 @@ def parse_kv_block(block: str) -> Dict[str, str]:
 def parse_config_edit_block(section_header: str, text: str) -> Dict[str, Dict[str, str]]:
    """
    Parse:
-   config X
-     edit "name" / edit 1
-       set k v
-     next
-   end
+     config X
+       edit "name" / edit 1
+         set k v
+       next
+     end
    """
    block = extract_block(section_header, text)
    if not block:
@@ -67,27 +67,19 @@ def has_utm(p: Dict[str, str]) -> bool:
    ]
    return any(k in p and p.get(k) not in (None, "", "0", "\"\"") for k in keys)
 # -------------------------
-# Firmware Extraction (MATCHES YOUR HEADER)
+# Firmware Extraction
 # -------------------------
 def extract_firmware_info(text: str) -> Tuple[str, str, str]:
    """
    Returns (platform, version, build) from FortiGate config export headers.
-   Your header example:
-     #config-version=FGVMGC-7.00-FW-build2829-000000:...
-     #version=700
-     #build=2829
-     #platform=FORTIGATE-VM64-GCP
    """
-   # Platform
    platform = "Unknown"
    m = re.search(r'(?mi)^#platform=(.+)$', text)
    if m:
        platform = m.group(1).strip()
    else:
-       # fallback inference
        if re.search(r"FORTIGATE-VM|FGVM", text, re.IGNORECASE):
            platform = "FORTIGATE-VM"
-   # Build
    build = "Unknown"
    m = re.search(r'(?mi)^#build=(\d+)\s*$', text)
    if m:
@@ -96,9 +88,7 @@ def extract_firmware_info(text: str) -> Tuple[str, str, str]:
        m = re.search(r'(?i)build0*(\d+)', text)
        if m:
            build = m.group(1)
-   # Version
    version = "Unknown"
-   # 1) From config-version: FGVMGC-7.00-FW-build2829
    m = re.search(r'(?mi)^#config-version=.*?-(\d+\.\d+)-FW-build', text)
    if m:
        raw = m.group(1)  # e.g. 7.00
@@ -106,7 +96,6 @@ def extract_firmware_info(text: str) -> Tuple[str, str, str]:
        minor = str(int(minor2))  # "00" -> "0"
        version = f"{major}.{minor}.0"
        return platform, version, build
-   # 2) From #version=700 => 7.0.0
    m = re.search(r'(?mi)^#version=(\d+)\s*$', text)
    if m:
        v = m.group(1).strip()
@@ -117,19 +106,43 @@ def extract_firmware_info(text: str) -> Tuple[str, str, str]:
        else:
            version = v
        return platform, version, build
-   # 3) Generic fallback: vX.Y.Z buildNNNN
    m = re.search(r'\bv(\d+\.\d+\.\d+)\b.*?\bbuild\s*0*(\d+)\b', text, re.IGNORECASE)
    if m:
        return platform, m.group(1), m.group(2)
    return platform, version, build
 # -------------------------
+# Benchmark Pack selection (metadata only for MVP subset)
+# -------------------------
+def detect_branch(version: str) -> str:
+   m = re.match(r"^\s*(\d+)\.(\d+)\.", str(version).strip())
+   if not m:
+       return "unknown"
+   return f"{int(m.group(1))}.{int(m.group(2))}"
+def select_benchmark_pack(fw_version: str, benchmark_family: str, benchmark_version: str) -> Dict[str, str]:
+   """
+   Returns benchmark_meta used in UI + Excel.
+   This does NOT parse PDFs yet; it declares what pack you are aligning to.
+   """
+   branch = detect_branch(fw_version)
+   # Auto
+   if benchmark_family.startswith("Auto"):
+       if branch == "7.0":
+           return {"pack_name": "CIS FortiGate 7.0.x Benchmark", "pack_version": "v1.4.0", "selection": "auto"}
+       if branch == "7.4":
+           return {"pack_name": "CIS FortiGate 7.4.x Benchmark", "pack_version": "v1.0.1", "selection": "auto"}
+       return {"pack_name": "CIS FortiGate Benchmark", "pack_version": "auto", "selection": "auto"}
+   # Explicit
+   if benchmark_family == "FortiOS 7.0.x":
+       v = benchmark_version if benchmark_version and benchmark_version != "Auto" else "v1.4.0"
+       return {"pack_name": "CIS FortiGate 7.0.x Benchmark", "pack_version": v, "selection": "manual"}
+   if benchmark_family == "FortiOS 7.4.x":
+       v = benchmark_version if benchmark_version and benchmark_version != "Auto" else "v1.0.1"
+       return {"pack_name": "CIS FortiGate 7.4.x Benchmark", "pack_version": v, "selection": "manual"}
+   return {"pack_name": "CIS FortiGate Benchmark", "pack_version": "unknown", "selection": "manual"}
+# -------------------------
 # Lifecycle Assessment (OFFLINE / POLICY-BASED)
 # -------------------------
 def derive_lifecycle_assessment(platform: str, version: str, build: str) -> Dict[str, Any]:
-   """
-   Lightweight lifecycle posture (offline rules).
-   Replace later with live Fortinet lifecycle + PSIRT lookups if allowed.
-   """
    platform_status = "Supported" if ("VM" in platform.upper() or "FORTIGATE-VM" in platform.upper()) else "Review"
    firmware_status = "Review"
    recommendation = "Review firmware lifecycle against Fortinet lifecycle policy and plan upgrades accordingly."
@@ -219,6 +232,8 @@ def covers(prev: Dict[str, str], curr: Dict[str, str]) -> bool:
 @dataclass
 class AnalysisResult:
    meta: Dict[str, Any]
+   benchmark_meta: Dict[str, Any]
+   scores: Dict[str, Any]
    cis: List[Dict[str, Any]]
    policies_raw: List[Dict[str, Any]]
    permissive: List[Dict[str, Any]]
@@ -229,9 +244,38 @@ class AnalysisResult:
    sec_profile_coverage: Dict[str, Any]
    lifecycle_assessment: Dict[str, Any]
 # -------------------------
+# Scoring helpers
+# -------------------------
+def compute_scores(cis: List[Dict[str, Any]]) -> Dict[str, Any]:
+   total = len(cis) or 0
+   if total == 0:
+       return {"compliance_score": 0.0, "maturity_score": 0.0}
+   pass_cnt = sum(1 for c in cis if str(c.get("status","")).upper() == "PASS")
+   compliance = round(100.0 * pass_cnt / total, 2)
+   # Weight-adjusted maturity: PASS=1, FAIL=0, UNKNOWN=0.5
+   w_sum = 0.0
+   w_sc  = 0.0
+   for c in cis:
+       w = float(c.get("weight", 1) or 1)
+       st = str(c.get("status","")).upper()
+       if st == "PASS":
+           s = 1.0
+       elif st == "FAIL":
+           s = 0.0
+       else:
+           s = 0.5
+       w_sum += w
+       w_sc  += (w * s)
+   maturity = round(100.0 * (w_sc / w_sum), 2) if w_sum else compliance
+   return {"compliance_score": compliance, "maturity_score": maturity}
+# -------------------------
 # Main Analysis
 # -------------------------
-def analyze_config(text: str) -> AnalysisResult:
+def analyze_config(
+   text: str,
+   benchmark_family: str = "Auto (from firmware)",
+   benchmark_version: str = "Auto"
+) -> AnalysisResult:
    sys_global = parse_kv_block(extract_block("config system global", text))
    pwd_policy = parse_kv_block(extract_block("config system password-policy", text))
    interfaces = parse_config_edit_block("config system interface", text)
@@ -243,6 +287,7 @@ def analyze_config(text: str) -> AnalysisResult:
    policies = parse_config_edit_block("config firewall policy", text)
    hostname = sys_global.get("hostname", "").strip('"').strip() or "Unknown"
    platform, fw_ver, fw_build = extract_firmware_info(text)
+   benchmark_meta = select_benchmark_pack(fw_ver, benchmark_family, benchmark_version)
    # CIS subset controls (extend as needed)
    cis: List[Dict[str, Any]] = []
    def add(cid, cat, name, status, observed, expected, weight, remediation):
@@ -268,6 +313,7 @@ def analyze_config(text: str) -> AnalysisResult:
    add("CIS-2.2", "Password & Auth", "Minimum password length >= 14",
        "PASS" if min_len >= 14 else "FAIL", str(min_len), ">= 14", 10,
        "config system password-policy\n set minimum-length 14\nend")
+   # NOTE: port3 is a demo assumption. If you want, we can auto-detect TRUST interface.
    trust_allow = interfaces.get("port3", {}).get("allowaccess", "")
    add("CIS-3.1", "Network", "No HTTPS/SSH management on TRUST interface",
        "FAIL" if ("https" in trust_allow or "ssh" in trust_allow) else "PASS",
@@ -400,6 +446,7 @@ def analyze_config(text: str) -> AnalysisResult:
                utm_attached += 1
    coverage_pct = (utm_attached / internet_policies * 100.0) if internet_policies else 0.0
    lifecycle_assessment = derive_lifecycle_assessment(platform, fw_ver, fw_build)
+   scores = compute_scores(cis)
    meta = {
        "hostname": hostname,
        "platform": platform,
@@ -408,6 +455,8 @@ def analyze_config(text: str) -> AnalysisResult:
    }
    return AnalysisResult(
        meta=meta,
+       benchmark_meta=benchmark_meta,
+       scores=scores,
        cis=cis,
        policies_raw=policies_raw,
        permissive=permissive,
