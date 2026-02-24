@@ -1,419 +1,554 @@
-# =========================
-# app.py (FULL UPDATED)
-# Adds: Redaction toggle + password gate + demo-safe UI rendering
-# =========================
-import re
+# app.py
+# Firewall Governance MVP — Premium SaaS-style Streamlit UI
+# - Fixes cropped Hostname/Platform/Firmware badges
+# - Adds “CIS Version Applied” banner (if analyzer provides benchmark_meta/scores)
+# - Executive KPIs + Pass/Fail/Why + Tabs + Export
+# - Dark premium theme + glass surfaces + clean tables
 import streamlit as st
 import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-from datetime import datetime
 from analyzer import analyze_config
 from report_generator import build_excel_report
-# ---------------------------
-# Password Gate (Streamlit Cloud Secrets)
-# Add in Streamlit Cloud > Settings > Secrets:
-# APP_PASSWORD="YourStrongPassword123"
-# ---------------------------
-if "authed" not in st.session_state:
-   st.session_state.authed = False
-if not st.session_state.authed:
-   st.title("Firewall Governance")
-   st.caption("Access restricted for internal demo.")
-   pwd = st.text_input("Enter access password", type="password")
-   if st.button("Access"):
-       if pwd == st.secrets.get("APP_PASSWORD", ""):
-           st.session_state.authed = True
-           st.rerun()
-       else:
-           st.error("Invalid password")
-   st.stop()
-# ---------------------------
-# Page config
-# ---------------------------
+
+# -----------------------------
+# Page Config
+# -----------------------------
 st.set_page_config(
-   page_title="Firewall Governance MVP",
+   page_title="Firewall Governance",
+   page_icon="🛡️",
    layout="wide",
    initial_sidebar_state="expanded",
 )
-# ---------------------------
-# Commercial SaaS CSS
-# ---------------------------
-st.markdown("""
+
+# -----------------------------
+# Premium CSS (dark SaaS)
+# -----------------------------
+st.markdown(
+   """
 <style>
-.stApp { background: #0b1220; }
-.block-container { padding-top: 1.0rem; padding-bottom: 2.0rem; max-width: 1350px; }
+/* ---------- Global ---------- */
+:root{
+ --bg0: #0b1220;
+ --bg1: #0e172a;
+ --card: rgba(255,255,255,0.06);
+ --card2: rgba(255,255,255,0.08);
+ --border: rgba(148,163,184,0.20);
+ --text: #e5e7eb;
+ --muted: rgba(229,231,235,0.70);
+ --muted2: rgba(229,231,235,0.55);
+ --good: #22c55e;
+ --warn: #f59e0b;
+ --bad:  #ef4444;
+ --info: #38bdf8;
+ --pill: rgba(34,197,94,0.18);
+ --pillBorder: rgba(34,197,94,0.25);
+ --shadow: 0 8px 24px rgba(0,0,0,0.35);
+}
+html, body, [data-testid="stAppViewContainer"]{
+ background: radial-gradient(1200px 600px at 20% 0%, rgba(56,189,248,0.12), transparent 55%),
+             radial-gradient(900px 500px at 90% 10%, rgba(34,197,94,0.10), transparent 55%),
+             linear-gradient(180deg, var(--bg1) 0%, var(--bg0) 100%);
+ color: var(--text);
+}
+.block-container{ padding-top: 1.0rem; padding-bottom: 2.0rem; }
+/* Remove extra padding in sidebar */
 section[data-testid="stSidebar"]{
- background: #0f172a;
- border-right: 1px solid rgba(255,255,255,.06);
+ background: linear-gradient(180deg, rgba(255,255,255,0.04), rgba(255,255,255,0.02));
+ border-right: 1px solid var(--border);
 }
-.navbar {
- background: linear-gradient(90deg, #0f172a, #111827);
- border: 1px solid rgba(255,255,255,.08);
- border-radius: 16px;
- padding: 16px 18px;
- box-shadow: 0 18px 38px rgba(0,0,0,.35);
+section[data-testid="stSidebar"] * { color: var(--text); }
+/* ---------- Top Header ---------- */
+.hero{
+ background: linear-gradient(135deg, rgba(56,189,248,0.18), rgba(34,197,94,0.12));
+ border: 1px solid var(--border);
+ border-radius: 18px;
+ padding: 18px 18px;
+ box-shadow: var(--shadow);
 }
-.nav-title { color: #e5e7eb; font-size: 18px; font-weight: 900; letter-spacing: .2px; }
-.nav-sub { color: rgba(229,231,235,.7); font-size: 12px; margin-top: 4px; }
-.surface {
- background: #111827;
- border: 1px solid rgba(255,255,255,.08);
- border-radius: 16px;
- padding: 16px 16px;
- box-shadow: 0 18px 34px rgba(0,0,0,.28);
+.heroTitle{
+ font-size: 20px;
+ font-weight: 800;
+ letter-spacing: 0.2px;
+ margin: 0;
 }
-.kpi {
- background: #0f172a;
- border: 1px solid rgba(255,255,255,.08);
- border-radius: 16px;
- padding: 14px 14px;
- box-shadow: 0 14px 26px rgba(0,0,0,.25);
+.heroSub{
+ margin-top: 6px;
+ font-size: 12.5px;
+ color: var(--muted);
 }
-.kpi-title { font-size: 12px; color: rgba(229,231,235,.75); margin-bottom: 6px; }
-.kpi-value { font-size: 22px; font-weight: 900; color: #e5e7eb; line-height: 1.1; }
-.kpi-sub   { font-size: 12px; color: rgba(229,231,235,.65); margin-top: 6px; }
-.h { font-size: 15px; font-weight: 900; color:#e5e7eb; margin: 0 0 6px; }
-.p { font-size: 12px; color: rgba(229,231,235,.65); margin: 0 0 10px; }
-.banner {
+.heroPills{
+ margin-top: 10px;
+ display:flex;
+ gap:10px;
+ flex-wrap:wrap;
+}
+/* ---------- Pills / Badges ---------- */
+.pill{
+ display:inline-flex;
+ align-items:center;
+ gap:8px;
+ padding: 6px 10px;
+ border-radius: 999px;
+ background: rgba(255,255,255,0.06);
+ border: 1px solid var(--border);
+ color: var(--text);
+ font-size: 12px;
+ white-space: nowrap;
+}
+.pillDot{ width:8px; height:8px; border-radius:99px; background: var(--info); opacity: 0.95; }
+.pillGood .pillDot{ background: var(--good); }
+.pillWarn .pillDot{ background: var(--warn); }
+.pillBad  .pillDot{ background: var(--bad);  }
+/* Asset pill (fix cropping) */
+.asset-pill{
+ display: inline-flex;
+ align-items: center;
+ padding: 6px 12px;
+ border-radius: 10px;
+ background: var(--pill);
+ border: 1px solid var(--pillBorder);
+ color: var(--good);
+ font-weight: 700;
+ font-size: 14px;
+ max-width: 100%;
+ white-space: normal;      /* allow wrap */
+ word-break: break-word;   /* break long strings */
+ line-height: 1.25;
+}
+/* ---------- Surfaces / Cards ---------- */
+.surface{
+ background: var(--card);
+ border: 1px solid var(--border);
  border-radius: 16px;
  padding: 14px 16px;
- border: 1px solid rgba(255,255,255,.10);
- background: linear-gradient(90deg, rgba(239,68,68,.18), rgba(17,24,39,0));
+ box-shadow: 0 1px 0 rgba(255,255,255,0.02);
+ backdrop-filter: blur(10px);
 }
-.banner-title { color:#fecaca; font-size: 13px; font-weight: 900; letter-spacing:.3px; }
-.banner-text { color: rgba(229,231,235,.85); font-size: 12px; margin-top: 6px; }
-.banner-sub { color: rgba(229,231,235,.60); font-size: 12px; margin-top: 4px; }
-.pill { display:inline-block; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 800; }
-.pill-green { background: rgba(34,197,94,.16); color:#86efac; border: 1px solid rgba(34,197,94,.35); }
-.pill-amber { background: rgba(245,158,11,.16); color:#fcd34d; border: 1px solid rgba(245,158,11,.35); }
-.pill-red   { background: rgba(239,68,68,.16); color:#fecaca; border: 1px solid rgba(239,68,68,.35); }
-.pill-slate { background: rgba(148,163,184,.12); color:#e5e7eb; border: 1px solid rgba(148,163,184,.25); }
-[data-testid="stDataFrame"]{
- background: #111827;
- border: 1px solid rgba(255,255,255,.08);
+.surfaceTitle{
+ font-weight: 800;
+ font-size: 14px;
+ margin-bottom: 6px;
+}
+.surfaceSub{
+ color: var(--muted);
+ font-size: 12px;
+}
+/* KPI cards */
+.kpi{
+ background: var(--card2);
+ border: 1px solid var(--border);
  border-radius: 16px;
- overflow: hidden;
+ padding: 14px 14px;
+ box-shadow: 0 10px 24px rgba(0,0,0,0.18);
+ min-height: 86px;
 }
-.stTabs [data-baseweb="tab"] { font-weight: 800; }
+.kpiLabel{
+ font-size: 12px;
+ color: var(--muted);
+ margin-bottom: 8px;
+ font-weight: 600;
+}
+.kpiValue{
+ font-size: 22px;
+ font-weight: 900;
+ line-height: 1.1;
+}
+.kpiSub{
+ margin-top: 6px;
+ font-size: 12px;
+ color: var(--muted2);
+}
+.kpiGood{ color: var(--good); }
+.kpiWarn{ color: var(--warn); }
+.kpiBad{  color: var(--bad);  }
+/* Divider */
+.hr{
+ height:1px;
+ background: rgba(148,163,184,0.18);
+ margin: 16px 0;
+ border-radius: 10px;
+}
+/* Tabs styling */
+.stTabs [data-baseweb="tab-list"]{
+ gap: 8px;
+}
+.stTabs [data-baseweb="tab"]{
+ background: rgba(255,255,255,0.05);
+ border: 1px solid rgba(148,163,184,0.20);
+ border-radius: 999px;
+ padding: 8px 14px;
+}
+.stTabs [aria-selected="true"]{
+ background: rgba(56,189,248,0.15);
+ border: 1px solid rgba(56,189,248,0.35);
+}
+/* Tables */
+[data-testid="stDataFrame"]{
+ border: 1px solid var(--border);
+ border-radius: 14px;
+ overflow: hidden;
+ box-shadow: 0 10px 24px rgba(0,0,0,0.10);
+}
+[data-testid="stTable"]{
+ border: 1px solid var(--border);
+ border-radius: 14px;
+ overflow:hidden;
+}
+/* Buttons */
+.stDownloadButton button, .stButton button{
+ border-radius: 12px !important;
+ border: 1px solid rgba(148,163,184,0.26) !important;
+ background: rgba(255,255,255,0.06) !important;
+}
+.stDownloadButton button:hover, .stButton button:hover{
+ border: 1px solid rgba(56,189,248,0.38) !important;
+ background: rgba(56,189,248,0.10) !important;
+}
+/* File uploader */
+[data-testid="stFileUploaderDropzone"]{
+ border: 1px dashed rgba(148,163,184,0.35) !important;
+ border-radius: 16px !important;
+ background: rgba(255,255,255,0.04) !important;
+}
+/* Remove Streamlit default header space */
+header { visibility: hidden; height: 0px; }
 </style>
-""", unsafe_allow_html=True)
-# ---------------------------
-# Redaction utilities
-# ---------------------------
-_IP_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b")
-def mask_ip(ip: str) -> str:
-   parts = ip.split(".")
-   if len(parts) == 4:
-       return f"{parts[0]}.XX.XX.X"
-   return "X.X.X.X"
-def redact_text(text: str) -> str:
-   """
-   Redacts common sensitive patterns in FortiGate configs for demo safety.
-   - IPv4 addresses
-   - serial numbers in header
-   - hostname
-   - SNMP community
-   - passwords / secrets / tokens / keys (best-effort)
-   """
-   t = text
-   # Serial
-   t = re.sub(r"(?mi)^(#serialno=)(.+)$", r"\1FG**************", t)
-   # Hostname in headers or config system global
-   t = re.sub(r'(?mi)^(set\s+hostname\s+).+$', r'\1"FW-DEMO-01"', t)
-   # SNMP community / passwords (best-effort: mask values after set)
-   sensitive_keys = [
-       "password", "passwd", "secret", "token", "private-key", "psksecret",
-       "community", "key", "apikey", "auth-pwd", "priv-pwd"
-   ]
-   for k in sensitive_keys:
-       t = re.sub(rf'(?mi)^(set\s+{re.escape(k)}\s+).+$', r'\1"***REDACTED***"', t)
-   # IPs
-   t = _IP_RE.sub(lambda m: mask_ip(m.group(0)), t)
-   return t
-def redact_value(val):
-   if val is None:
-       return val
-   s = str(val)
-   # mask any IPs in values
-   s = _IP_RE.sub(lambda m: mask_ip(m.group(0)), s)
-   # mask long ids/serial-like tokens
-   s = re.sub(r"\bFG[A-Z0-9]{6,}\b", "FG************", s)
-   return s
-def redact_df(df: pd.DataFrame) -> pd.DataFrame:
-   if df is None or df.empty:
-       return df
-   out = df.copy()
-   for c in out.columns:
-       out[c] = out[c].apply(redact_value)
-   return out
-def redact_lifecycle_dict(d: dict) -> dict:
-   if not d:
-       return d
-   out = {}
-   for k, v in d.items():
-       out[k] = redact_value(v) if isinstance(v, (str, int, float)) else v
-   return out
-# ---------------------------
-# Navbar
-# ---------------------------
-st.markdown("""
-<div class="navbar">
-<div class="nav-title">Firewall Governance</div>
-<div class="nav-sub">CIS • Hygiene • Segmentation • Lifecycle risk • Evidence export</div>
-</div>
-""", unsafe_allow_html=True)
-# ---------------------------
-# Sidebar
-# ---------------------------
-with st.sidebar:
-   st.markdown("### Upload")
-   uploaded = st.file_uploader("FortiGate config (.txt/.conf/.cfg)", type=["txt", "conf", "cfg"])
-   st.markdown("---")
-   st.markdown("### Demo Safety")
-   redact = st.toggle("Redact sensitive data (recommended)", value=True)
-   st.caption("Masks IPs, serials, hostnames, and secrets in UI/export.")
-   st.markdown("---")
-   st.markdown("### Run context")
-   st.write(f"Time: `{datetime.now().strftime('%Y-%m-%d %H:%M')}`")
-if not uploaded:
-   st.info("Upload a config file to begin.")
-   st.stop()
-raw_text = uploaded.read().decode("utf-8", errors="ignore")
-# Analyze on original text (to keep detection accurate)
-with st.spinner("Analyzing configuration..."):
-   result = analyze_config(redact_text(raw_text)) if redact else analyze_config(raw_text)
-# If redaction enabled, create redacted copies for display/export
-display_meta = dict(result.meta)
-display_life = dict(result.lifecycle_assessment or {})
-display_cis = pd.DataFrame(result.cis)
-display_perm = pd.DataFrame(result.permissive)
-display_dup = pd.DataFrame(result.duplicates)
-display_shd = pd.DataFrame(result.shadowed)
-display_red = pd.DataFrame(result.redundant)
-display_seg = pd.DataFrame(result.segmentation)
-display_cov = dict(result.sec_profile_coverage)
-if redact:
-   # meta
-   for k in list(display_meta.keys()):
-       display_meta[k] = redact_value(display_meta[k])
-   # lifecycle
-   display_life = redact_lifecycle_dict(display_life)
-   # dataframes
-   display_cis = redact_df(display_cis)
-   display_perm = redact_df(display_perm)
-   display_dup = redact_df(display_dup)
-   display_shd = redact_df(display_shd)
-   display_red = redact_df(display_red)
-   display_seg = redact_df(display_seg)
-# ---------------------------
-# Metrics
-# ---------------------------
-hostname = display_meta.get("hostname", "Unknown")
-platform = display_meta.get("platform", "Unknown")
-fw_ver = display_meta.get("firmware_version", "Unknown")
-fw_build = display_meta.get("firmware_build", "Unknown")
-fw_status = str(display_life.get("firmware_status", "Review"))
-pass_count = int((pd.DataFrame(result.cis)["status"] == "PASS").sum()) if result.cis else 0
-fail_count = int((pd.DataFrame(result.cis)["status"] == "FAIL").sum()) if result.cis else 0
-unk_count  = int((pd.DataFrame(result.cis)["status"] == "UNKNOWN").sum()) if result.cis else 0
-total_count = len(result.cis) if result.cis else 0
-compliance_pct = round((pass_count / total_count) * 100, 2) if total_count else 0.0
-utm_pct = result.sec_profile_coverage.get("utm_coverage_pct", 0)
-perm_cnt = len(result.permissive)
-dup_cnt  = len(result.duplicates)
-shd_cnt  = len(result.shadowed)
-red_cnt  = len(result.redundant)
-is_eol = fw_status.startswith("EOL")
-banner_level = "CRITICAL" if is_eol else ("ELEVATED" if fail_count > 0 or perm_cnt > 0 else "NORMAL")
-# ---------------------------
-# Top row: Context + Risk
-# ---------------------------
-c1, c2 = st.columns([1.6, 1.1])
-with c1:
-   st.markdown("<div class='surface'>", unsafe_allow_html=True)
-   st.markdown("<div class='h'>Asset Context</div>", unsafe_allow_html=True)
-   st.markdown("<div class='p'>Device identification and detected runtime metadata</div>", unsafe_allow_html=True)
-   st.write(f"**Hostname:** `{hostname}`")
-   st.write(f"**Platform:** `{platform}`")
-   st.write(f"**Firmware:** `{fw_ver} (build {fw_build})`")
-   st.markdown("</div>", unsafe_allow_html=True)
-with c2:
-   if banner_level == "CRITICAL":
-       pill = "<span class='pill pill-red'>CRITICAL</span>"
-   elif banner_level == "ELEVATED":
-       pill = "<span class='pill pill-amber'>ELEVATED</span>"
-   else:
-       pill = "<span class='pill pill-green'>NORMAL</span>"
-   exposure = display_life.get("security_exposure", "—")
-   st.markdown("<div class='surface'>", unsafe_allow_html=True)
-   st.markdown("<div class='h'>Risk Posture</div>", unsafe_allow_html=True)
-   st.markdown("<div class='p'>Executive summary of current exposure</div>", unsafe_allow_html=True)
-   st.markdown(
-       f"<div class='banner'>"
-       f"<div class='banner-title'>{pill}  Lifecycle / Configuration Risk</div>"
-       f"<div class='banner-text'>Firmware status: <b>{fw_status}</b></div>"
-       f"<div class='banner-sub'>Exposure: {exposure}</div>"
-       f"</div>",
-       unsafe_allow_html=True
-   )
-   st.caption("Lifecycle assessment applies to vendor support status of detected FortiOS branch (not an individual firewall rule).")
-   st.markdown("</div>", unsafe_allow_html=True)
-st.markdown("")
-# ---------------------------
-# KPI row
-# ---------------------------
-k1, k2, k3, k4, k5, k6 = st.columns(6)
-def kpi(col, title, value, sub=""):
+""",
+   unsafe_allow_html=True,
+)
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def safe_get(obj, attr, default=None):
+   return getattr(obj, attr, default) if obj is not None else default
+
+def render_kpi(col, label, value, sub="", tone=""):
+   tone_class = {"good": "kpiGood", "warn": "kpiWarn", "bad": "kpiBad"}.get(tone, "")
    col.markdown(
        f"""
 <div class="kpi">
-<div class="kpi-title">{title}</div>
-<div class="kpi-value">{value}</div>
-<div class="kpi-sub">{sub}</div>
+<div class="kpiLabel">{label}</div>
+<div class="kpiValue {tone_class}">{value}</div>
+<div class="kpiSub">{sub}</div>
 </div>
        """,
-       unsafe_allow_html=True
+       unsafe_allow_html=True,
    )
-kpi(k1, "CIS Compliance", f"{compliance_pct}%", f"PASS {pass_count} / {total_count}")
-kpi(k2, "CIS FAIL", f"{fail_count}", "Controls needing remediation")
-kpi(k3, "Permissive Rules", f"{perm_cnt}", "MEDIUM+ risk rules")
-kpi(k4, "Shadowed", f"{shd_cnt}", "Conservative detection")
-kpi(k5, "Redundant", f"{red_cnt}", "Conservative detection")
-kpi(k6, "UTM Coverage", f"{utm_pct}%", "Internet-bound policies")
-st.markdown("")
-# ---------------------------
-# Charts
-# ---------------------------
-def donut_chart(pass_n, fail_n, unk_n):
-   fig, ax = plt.subplots(figsize=(3.2, 3.2))
-   ax.pie(
-       [pass_n, fail_n, unk_n],
-       labels=["PASS", "FAIL", "UNKNOWN"],
-       autopct=lambda p: f"{p:.0f}%" if p > 0 else "",
-       startangle=90
+
+def status_tone(status: str) -> str:
+   s = (status or "").upper()
+   if s == "PASS":
+       return "good"
+   if s == "FAIL":
+       return "bad"
+   return "warn"
+
+# -----------------------------
+# Sidebar
+# -----------------------------
+with st.sidebar:
+   st.markdown("### Upload Config")
+   uploaded = st.file_uploader("FortiGate config (.txt/.conf/.cfg)", type=["txt", "conf", "cfg"])
+   st.markdown("---")
+   st.markdown("### Options")
+   show_all_rows = st.toggle("Show all rows in tables", value=False)
+   compact_tables = st.toggle("Compact tables", value=True)
+   st.markdown("---")
+   st.caption("Tip: Keep secrets out of configs before uploading.")
+
+# -----------------------------
+# Header
+# -----------------------------
+st.markdown(
+   """
+<div class="hero">
+<div class="heroTitle">Firewall Governance</div>
+<div class="heroSub">CIS • Hygiene • Segmentation • Lifecycle risk • Evidence export</div>
+<div class="heroPills">
+<span class="pill pillGood"><span class="pillDot"></span>Policy Assurance</span>
+<span class="pill"><span class="pillDot"></span>Config-driven checks</span>
+<span class="pill pillWarn"><span class="pillDot"></span>Offline-friendly</span>
+</div>
+</div>
+""",
+   unsafe_allow_html=True,
+)
+st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+if not uploaded:
+   st.info("Upload a FortiGate configuration from the left sidebar to begin.")
+   st.stop()
+# -----------------------------
+# Run Analysis
+# -----------------------------
+raw_text = uploaded.read().decode("utf-8", errors="ignore")
+with st.spinner("Analyzing configuration…"):
+   result = analyze_config(raw_text)
+meta = safe_get(result, "meta", {}) or {}
+hostname = meta.get("hostname", "Unknown")
+platform = meta.get("platform", "Unknown")
+fw_ver = meta.get("firmware_version", "Unknown")
+fw_build = meta.get("firmware_build", "Unknown")
+life = safe_get(result, "lifecycle_assessment", {}) or {}
+bench = safe_get(result, "benchmark_meta", {}) or {}
+scores = safe_get(result, "scores", {}) or {}
+cis_rows = safe_get(result, "cis", []) or []
+cis_df = pd.DataFrame(cis_rows) if cis_rows else pd.DataFrame(columns=["control_id", "category", "control_name", "status"])
+# Normalize for older outputs (some versions use controlId/control_name etc.)
+for col in ["control_id", "category", "control_name", "status"]:
+   if col not in cis_df.columns:
+       cis_df[col] = ""
+# Pass/Fail/Unknown counts
+pass_count = int((cis_df["status"].astype(str).str.upper() == "PASS").sum()) if not cis_df.empty else 0
+fail_count = int((cis_df["status"].astype(str).str.upper() == "FAIL").sum()) if not cis_df.empty else 0
+unk_count = int((~cis_df["status"].astype(str).str.upper().isin(["PASS", "FAIL"])).sum()) if not cis_df.empty else 0
+total_count = int(len(cis_df)) if not cis_df.empty else 0
+compliance_pct = scores.get("compliance_score")
+if compliance_pct is None:
+   compliance_pct = round((pass_count / total_count) * 100, 2) if total_count else 0.0
+maturity_pct = scores.get("maturity_score", None)
+perm_cnt = len(safe_get(result, "permissive", []) or [])
+dup_cnt = len(safe_get(result, "duplicates", []) or [])
+shd_cnt = len(safe_get(result, "shadowed", []) or [])
+red_cnt = len(safe_get(result, "redundant", []) or [])
+sec_cov = safe_get(result, "sec_profile_coverage", {}) or {}
+utm_pct = sec_cov.get("utm_coverage_pct", 0)
+# -----------------------------
+# Top Summary: Asset + Lifecycle + Benchmark
+# -----------------------------
+left, right = st.columns([2.2, 1.2], gap="large")
+with left:
+   st.markdown(
+       """
+<div class="surface">
+<div class="surfaceTitle">Asset Context</div>
+<div class="surfaceSub">Device identification and detected runtime metadata</div>
+</div>
+       """,
+       unsafe_allow_html=True,
    )
-   centre_circle = plt.Circle((0, 0), 0.70, fc="#111827")
-   fig.gca().add_artist(centre_circle)
-   ax.set_title("CIS Status Mix", fontsize=12, fontweight="bold", color="#e5e7eb")
-   fig.patch.set_facecolor("#111827")
-   ax.set_facecolor("#111827")
-   return fig
-def bar_chart(labels, values, title):
-   fig, ax = plt.subplots(figsize=(4.2, 3.2))
-   ax.bar(labels, values)
-   ax.set_title(title, fontsize=12, fontweight="bold", color="#e5e7eb")
-   fig.patch.set_facecolor("#111827")
-   ax.set_facecolor("#111827")
-   ax.tick_params(colors="#cbd5e1")
-   for spine in ax.spines.values():
-       spine.set_color("#334155")
-   return fig
-ch1, ch2, ch3 = st.columns([1.0, 1.2, 1.2])
-with ch1:
-   st.markdown("<div class='surface'><div class='h'>Compliance Overview</div><div class='p'>PASS/FAIL/UNKNOWN distribution</div>", unsafe_allow_html=True)
-   st.pyplot(donut_chart(pass_count, fail_count, unk_count), clear_figure=True)
-   st.markdown("</div>", unsafe_allow_html=True)
-with ch2:
-   st.markdown("<div class='surface'><div class='h'>Rule Hygiene</div><div class='p'>Top indicators for policy cleanup</div>", unsafe_allow_html=True)
-   st.pyplot(bar_chart(["Permissive", "Shadowed", "Redundant", "Duplicates"], [perm_cnt, shd_cnt, red_cnt, dup_cnt], "Rule Hygiene Counts"), clear_figure=True)
-   st.markdown("</div>", unsafe_allow_html=True)
-with ch3:
-   internet_total = result.sec_profile_coverage.get("internet_bound_policies", 0)
-   internet_utm = result.sec_profile_coverage.get("internet_with_utm", 0)
-   st.markdown("<div class='surface'><div class='h'>Security Controls</div><div class='p'>UTM on internet-bound rules</div>", unsafe_allow_html=True)
-   st.pyplot(bar_chart(["Internet total", "Internet w/ UTM"], [internet_total, internet_utm], "Internet Control Coverage"), clear_figure=True)
-   st.markdown("</div>", unsafe_allow_html=True)
-st.markdown("")
-# ---------------------------
+   st.markdown("")
+   c1, c2, c3 = st.columns([1.0, 1.0, 1.0], gap="large")
+   with c1:
+       st.markdown("**Hostname**")
+       st.markdown(f"<span class='asset-pill' title='{hostname}'>{hostname}</span>", unsafe_allow_html=True)
+   with c2:
+       st.markdown("**Platform**")
+       st.markdown(f"<span class='asset-pill' title='{platform}'>{platform}</span>", unsafe_allow_html=True)
+   with c3:
+       fw_label = f"{fw_ver} (build {fw_build})" if fw_build not in [None, "", "Unknown"] else f"{fw_ver}"
+       st.markdown("**Firmware**")
+       st.markdown(f"<span class='asset-pill' title='{fw_label}'>{fw_label}</span>", unsafe_allow_html=True)
+with right:
+   # Lifecycle tone
+   fw_status = (life.get("firmware_status") or "Review").upper()
+   plat_status = (life.get("platform_status") or "Review").upper()
+   def pill_for_status(label, status):
+       s = (status or "").upper()
+       if "EOL" in s or "UNSUPPORTED" in s:
+           cls = "pillBad"
+       elif "SUPPORTED" in s or "OK" in s:
+           cls = "pillGood"
+       else:
+           cls = "pillWarn"
+       return f"<span class='pill {cls}'><span class='pillDot'></span>{label}: {status}</span>"
+   # Benchmark details (if available)
+   pack_name = bench.get("pack_name", "CIS-aligned checks")
+   pack_ver = bench.get("pack_version", "")
+   sel = bench.get("selection", "auto")
+   bench_line = f"{pack_name} {pack_ver}".strip()
+   st.markdown(
+       f"""
+<div class="surface">
+<div class="surfaceTitle">Risk Posture</div>
+<div class="surfaceSub">Lifecycle + benchmark context</div>
+<div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap;">
+           {pill_for_status("Platform", plat_status.title())}
+           {pill_for_status("Firmware", fw_status.title())}
+<span class="pill"><span class="pillDot"></span>Benchmark: {bench_line}</span>
+<span class="pill"><span class="pillDot"></span>Selection: {sel}</span>
+</div>
+<div style="margin-top:10px; color: var(--muted); font-size:12px;">
+           {life.get("security_exposure","")}
+</div>
+</div>
+       """,
+       unsafe_allow_html=True,
+   )
+# -----------------------------
+# KPI Row
+# -----------------------------
+st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+k1, k2, k3, k4, k5, k6 = st.columns(6, gap="large")
+render_kpi(k1, "CIS Compliance", f"{compliance_pct:.2f}%", f"PASS {pass_count} / {total_count}", tone="good" if compliance_pct >= 80 else "warn")
+render_kpi(k2, "CIS FAIL", f"{fail_count}", "Controls needing remediation", tone="bad" if fail_count else "good")
+render_kpi(k3, "Permissive Rules", f"{perm_cnt}", "MEDIUM+ risk rules", tone="warn" if perm_cnt else "good")
+render_kpi(k4, "Duplicates", f"{dup_cnt}", "Exact matches", tone="warn" if dup_cnt else "good")
+render_kpi(k5, "Shadowed", f"{shd_cnt}", "Conservative detection", tone="warn" if shd_cnt else "good")
+render_kpi(k6, "UTM Coverage", f"{utm_pct}%", "Internet-bound policies", tone="good" if utm_pct >= 80 else "warn")
+# Optional maturity KPI row
+if maturity_pct is not None:
+   st.markdown("")
+   m1, m2, m3, m4 = st.columns(4, gap="large")
+   render_kpi(m1, "Maturity Score", f"{float(maturity_pct):.2f}%", "Weight × maturity adjusted", tone="good" if maturity_pct >= 80 else "warn")
+   render_kpi(m2, "CIS UNKNOWN", f"{unk_count}", "Not verifiable / not implemented", tone="warn" if unk_count else "good")
+   render_kpi(m3, "Redundant", f"{red_cnt}", "Candidates to remove", tone="warn" if red_cnt else "good")
+   render_kpi(m4, "Total Controls", f"{total_count}", "Evaluated benchmark subset", tone="good" if total_count else "warn")
+st.markdown('<div class="hr"></div>', unsafe_allow_html=True)
+# -----------------------------
 # Tabs
-# ---------------------------
-tab_dash, tab_cis, tab_fail, tab_hyg, tab_seg, tab_life, tab_export = st.tabs([
-   "Executive",
-   "CIS Scorecard",
-   "Failures & Why",
-   "Policy Hygiene",
-   "Segmentation",
-   "Lifecycle",
-   "Export"
-])
-with tab_dash:
-   st.markdown("<div class='surface'><div class='h'>Executive Summary</div><div class='p'>Decision-ready highlights</div>", unsafe_allow_html=True)
-   bullets = []
-   if is_eol:
-       bullets.append("🔴 Firmware branch detected as **EOL/Unsupported** (upgrade recommended).")
-   if fail_count:
-       bullets.append(f"🟠 **{fail_count}** CIS controls failing in evaluated subset.")
-   if perm_cnt:
-       bullets.append(f"🟠 **{perm_cnt}** permissive rules flagged (MEDIUM+).")
-   if utm_pct == 0 and result.sec_profile_coverage.get("internet_bound_policies", 0) > 0:
-       bullets.append("🟠 Internet-bound policies show **0% UTM coverage** in this subset (verify profiles).")
-   if not bullets:
-       bullets.append("🟢 No critical findings detected in the evaluated subset.")
-   st.markdown("\n".join([f"- {b}" for b in bullets]))
-   st.markdown("</div>", unsafe_allow_html=True)
-with tab_cis:
-   st.markdown("<div class='surface'><div class='h'>CIS Scorecard</div><div class='p'>Subset of verifiable controls from configuration export</div>", unsafe_allow_html=True)
-   st.dataframe(display_cis, use_container_width=True, hide_index=True)
-   st.markdown("</div>", unsafe_allow_html=True)
-with tab_fail:
-   st.markdown("<div class='surface'><div class='h'>Failures & Why</div><div class='p'>Observed vs Expected + remediation CLI</div>", unsafe_allow_html=True)
-   fail_df = pd.DataFrame(result.cis)
-   fail_df = fail_df[fail_df["status"] == "FAIL"] if not fail_df.empty else fail_df
-   fail_df_disp = redact_df(fail_df) if redact else fail_df
-   if fail_df_disp.empty:
-       st.success("No FAIL controls in the evaluated CIS subset.")
+# -----------------------------
+tab_exec, tab_cis, tab_fail, tab_hyg, tab_seg, tab_life, tab_export = st.tabs(
+   ["Executive", "CIS Scorecard", "Failures & Why", "Policy Hygiene", "Segmentation", "Lifecycle", "Export"]
+)
+# Executive
+with tab_exec:
+   st.markdown("### Executive Snapshot")
+   st.caption("High-level view for leadership review (controls, key drivers, and recommended next actions).")
+   # Light summary cards
+   s1, s2 = st.columns([1.4, 1.0], gap="large")
+   with s1:
+       st.markdown(
+           """
+<div class="surface">
+<div class="surfaceTitle">Key Findings</div>
+<div class="surfaceSub">Most material items detected from configuration</div>
+</div>
+           """,
+           unsafe_allow_html=True,
+       )
+       drivers = []
+       if fail_count:
+           drivers.append(f"• **{fail_count} CIS controls failed** — remediation actions available in the Failures tab.")
+       if unk_count:
+           drivers.append(f"• **{unk_count} controls unknown** — not verifiable from config or missing check logic.")
+       if perm_cnt:
+           drivers.append(f"• **{perm_cnt} permissive rule(s)** — may increase attack surface.")
+       if shd_cnt:
+           drivers.append(f"• **{shd_cnt} shadowed rule(s)** — potential rule cleanup opportunity.")
+       if dup_cnt:
+           drivers.append(f"• **{dup_cnt} duplicate rule(s)** — consolidate to reduce policy sprawl.")
+       if "EOL" in fw_status or "UNSUPPORTED" in fw_status:
+           drivers.append("• **Firmware lifecycle risk** — upgrade planning required to remain supported.")
+       if not drivers:
+           drivers.append("• No critical drivers detected in the evaluated subset.")
+       st.markdown("\n".join(drivers))
+   with s2:
+       st.markdown(
+           """
+<div class="surface">
+<div class="surfaceTitle">Recommended Actions</div>
+<div class="surfaceSub">Next steps aligned to governance + assurance</div>
+</div>
+           """,
+           unsafe_allow_html=True,
+       )
+       actions = [
+           "1) Remediate failed CIS controls (prioritize authentication & logging).",
+           "2) Validate permissive rules against business justification; tighten where possible.",
+           "3) Review shadowed/duplicate rules and consolidate with change management.",
+           "4) Capture evidence (screenshots/exports) per control for audit readiness.",
+       ]
+       if "EOL" in fw_status or "UNSUPPORTED" in fw_status:
+           actions.append("5) Plan firmware uplift to supported branch; assess PSIRT exposure.")
+       st.markdown("\n".join(actions))
+   st.markdown("### Control Overview")
+   if cis_df.empty:
+       st.info("No CIS controls available from analyzer output.")
    else:
-       show_cols = ["control_id", "category", "control_name", "observed", "expected", "remediation"]
-       st.dataframe(fail_df_disp[show_cols], use_container_width=True, hide_index=True)
-   st.markdown("</div>", unsafe_allow_html=True)
+       view_cols = [c for c in ["control_id", "category", "control_name", "status"] if c in cis_df.columns]
+       df_view = cis_df[view_cols].copy()
+       st.dataframe(df_view, use_container_width=True, hide_index=True)
+# CIS Scorecard
+with tab_cis:
+   st.markdown("### CIS Scorecard")
+   st.caption("CIS-aligned controls evaluated from the configuration dump. (Subset-based unless benchmark packs are enabled.)")
+   if cis_df.empty:
+       st.info("No CIS controls available.")
+   else:
+       st.dataframe(cis_df, use_container_width=True, hide_index=True)
+# Failures
+with tab_fail:
+   st.markdown("### Failures & Why")
+   st.caption("Observed vs expected gaps and suggested CLI remediation.")
+   if cis_df.empty:
+       st.info("No CIS controls available.")
+   else:
+       upper = cis_df["status"].astype(str).str.upper()
+       fail_df = cis_df[upper == "FAIL"].copy()
+       if fail_df.empty:
+           st.success("No FAIL controls in the evaluated CIS subset.")
+       else:
+           cols_preferred = ["control_id", "category", "control_name", "observed", "expected", "why_failed", "remediation"]
+           cols = [c for c in cols_preferred if c in fail_df.columns]
+           st.dataframe(fail_df[cols], use_container_width=True, hide_index=True)
+       with st.expander("How to interpret FAIL results"):
+           st.write("**Why failed** indicates the observed configuration does not meet the expected requirement.")
+           st.write("Use **Remediation** as a starting point and validate via change control prior to production changes.")
+# Hygiene
 with tab_hyg:
-   st.markdown("<div class='surface'><div class='h'>Policy Hygiene</div><div class='p'>Permissive, duplicate, shadowed and redundant rule checks</div>", unsafe_allow_html=True)
+   st.markdown("### Policy Hygiene")
+   st.caption("Rule hygiene signals: permissive, duplicates, shadowed, redundant (heuristic-based for MVP).")
+   permissive = pd.DataFrame(safe_get(result, "permissive", []) or [])
+   duplicates = pd.DataFrame(safe_get(result, "duplicates", []) or [])
+   shadowed = pd.DataFrame(safe_get(result, "shadowed", []) or [])
+   redundant = pd.DataFrame(safe_get(result, "redundant", []) or [])
    st.markdown("#### Permissive Rules (MEDIUM+)")
-   st.dataframe(display_perm, use_container_width=True, hide_index=True)
-   c1, c2 = st.columns(2)
+   st.dataframe(permissive, use_container_width=True, hide_index=True)
+   c1, c2 = st.columns(2, gap="large")
    with c1:
        st.markdown("#### Duplicate Rules")
-       st.dataframe(display_dup, use_container_width=True, hide_index=True)
+       st.dataframe(duplicates, use_container_width=True, hide_index=True)
    with c2:
        st.markdown("#### Shadowed Rules")
-       st.dataframe(display_shd, use_container_width=True, hide_index=True)
+       st.dataframe(shadowed, use_container_width=True, hide_index=True)
    st.markdown("#### Redundant Rules")
-   st.dataframe(display_red, use_container_width=True, hide_index=True)
-   st.caption("Shadowed/Redundant are conservative. For precision, resolve address/service objects & groups.")
-   st.markdown("</div>", unsafe_allow_html=True)
+   st.dataframe(redundant, use_container_width=True, hide_index=True)
+   st.caption("Note: Shadowed/Redundant detection is conservative for MVP. For precision, resolve address/service groups and object expansion.")
+# Segmentation
 with tab_seg:
-   st.markdown("<div class='surface'><div class='h'>Segmentation</div><div class='p'>Interface-to-interface allow matrix and governance indicators</div>", unsafe_allow_html=True)
-   st.dataframe(display_seg, use_container_width=True, hide_index=True)
-   st.markdown("</div>", unsafe_allow_html=True)
+   st.markdown("### Segmentation")
+   st.caption("Interface-to-interface allow matrix and governance indicators.")
+   seg = pd.DataFrame(safe_get(result, "segmentation", []) or [])
+   st.dataframe(seg, use_container_width=True, hide_index=True)
+   st.markdown("#### Security Profile Coverage")
+   st.json(sec_cov)
+# Lifecycle
 with tab_life:
-   st.markdown("<div class='surface'><div class='h'>Lifecycle Details</div><div class='p'>Applies to firmware branch support status</div>", unsafe_allow_html=True)
-   life_df = pd.DataFrame([
-       ["Applies to", "Firmware branch lifecycle (FortiOS support status)"],
-       ["Detected platform", display_life.get("platform", platform)],
-       ["Platform status", display_life.get("platform_status", "Review")],
-       ["Detected firmware", f"{display_life.get('firmware_version', fw_ver)} (build {display_life.get('firmware_build', fw_build)})"],
-       ["Firmware status", display_life.get("firmware_status", "Review")],
-       ["Security exposure (why)", display_life.get("security_exposure", "Unknown")],
-       ["Recommended action", display_life.get("recommendation", "")]
-   ], columns=["Field", "Value"])
-   st.dataframe(life_df, use_container_width=True, hide_index=True)
-   st.markdown("</div>", unsafe_allow_html=True)
+   st.markdown("### Lifecycle Risk")
+   st.caption("Offline lifecycle posture. Replace with live Fortinet lifecycle + PSIRT feeds when permitted.")
+   st.json(life)
+   rec = (life.get("recommendation") or "").strip()
+   if rec:
+       st.markdown("#### Recommendation")
+       st.write(rec)
+# Export
 with tab_export:
-   st.markdown("<div class='surface'><div class='h'>Export</div><div class='p'>Download the evidence workbook</div>", unsafe_allow_html=True)
-   # For demo safety, export redacted workbook by generating on redacted text
-   if redact:
-       safe_text = redact_text(raw_text)
-       safe_result = analyze_config(safe_text)
-       excel_bytes = build_excel_report(safe_result)
-       st.caption("Export is redacted for demo safety.")
-   else:
+   st.markdown("### Export Evidence Workbook")
+   st.caption("Download an Excel workbook with dashboard + evidence-ready tables.")
+   try:
        excel_bytes = build_excel_report(result)
-   st.download_button(
-       "Download Excel Report",
-       data=excel_bytes,
-       file_name=f"Firewall_Governance_{hostname}.xlsx",
-       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+       filename_safe = "".join([c if c.isalnum() or c in ("-", "_") else "_" for c in hostname]) or "Firewall"
+       st.download_button(
+           "Download Excel Report",
+           data=excel_bytes,
+           file_name=f"Firewall_Governance_{filename_safe}.xlsx",
+           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+           use_container_width=True,
+       )
+   except Exception as e:
+       st.error("Excel export failed. Check report_generator.py / analyzer output structure.")
+       st.code(str(e))
+# Table height preferences (optional)
+if compact_tables:
+   st.markdown(
+       """
+<style>
+       div[data-testid="stDataFrame"] div[role="grid"] { min-height: 280px; }
+</style>
+       """,
+       unsafe_allow_html=True,
    )
-   st.markdown("</div>", unsafe_allow_html=True)
+# Optional: expand table row display
+if show_all_rows:
+   st.caption("Showing all rows may reduce performance on large configs.")
+   st.session_state["show_all_rows"] = True
