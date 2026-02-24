@@ -183,7 +183,7 @@ if not uploaded:
 raw_text = uploaded.read().decode("utf-8", errors="ignore")
 # Analyze on original text (to keep detection accurate)
 with st.spinner("Analyzing configuration..."):
-   result = analyze_config(raw_text)
+   result = analyze_config(redact_text(raw_text)) if redact else analyze_config(raw_text)
 # If redaction enabled, create redacted copies for display/export
 display_meta = dict(result.meta)
 display_life = dict(result.lifecycle_assessment or {})
